@@ -44,7 +44,7 @@ extension AudioObjectID {
 
     // MARK: Generic reads
 
-    func read<T>(_ selector: AudioObjectPropertySelector,
+    func read<T: BitwiseCopyable>(_ selector: AudioObjectPropertySelector,
                  scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
                  default value: T) throws -> T {
         var address = AudioObjectPropertyAddress(selector, scope: scope)
@@ -55,7 +55,7 @@ extension AudioObjectID {
         return result
     }
 
-    func readArray<T>(_ selector: AudioObjectPropertySelector,
+    func readArray<T: BitwiseCopyable>(_ selector: AudioObjectPropertySelector,
                       scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
                       element: T) throws -> [T] {
         var address = AudioObjectPropertyAddress(selector, scope: scope)

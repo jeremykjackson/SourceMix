@@ -10,7 +10,7 @@ BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 
 ARCHS=(--arch arm64)
-if [[ "${UNIVERSAL:-1}" == "1" ]]; then ARCHS=(--arch arm64 --arch x86_64); fi
+if [[ "${UNIVERSAL:-0}" == "1" ]]; then ARCHS=(--arch arm64 --arch x86_64); fi
 
 echo "▸ Compiling ($(swift --version 2>/dev/null | head -1))"
 swift build -c release "${ARCHS[@]}"
