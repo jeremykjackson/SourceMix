@@ -1,0 +1,31 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+          swift --version
+
+      - name: Build app bundle
+        run: ./scripts/build-app.sh
+
+      - name: Zip
+        run: cd build && ditto -c -k --keepParent SourceMix.app SourceMix.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SourceMix
+          path: build/SourceMix.zip
