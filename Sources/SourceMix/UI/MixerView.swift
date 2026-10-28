@@ -13,6 +13,10 @@ struct MixerView: View {
                 PermissionBanner()
             }
 
+            if let reason = store.bypassReason {
+                BypassBanner(reason: reason)
+            }
+
             ScrollView(.horizontal) {
                 GlassGroup(spacing: 14) {
                     HStack(alignment: .top, spacing: 14) {
@@ -112,6 +116,36 @@ struct PermissionBanner: View {
         }
         .padding(14)
         .glassSurface(cornerRadius: 18, tint: .orange.opacity(0.2))
+    }
+}
+
+/// Shown while SourceMix is passing audio through untouched.
+struct BypassBanner: View {
+    let reason: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "pause.circle.fill")
+                .font(.title3)
+                .foregroundStyle(.yellow)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Mixing Paused").font(.headline)
+                Text(reason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open Sound Settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .controlSize(.small)
+                .glassButtonStyle()
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .glassSurface(cornerRadius: 18, tint: .yellow.opacity(0.15))
     }
 }
 

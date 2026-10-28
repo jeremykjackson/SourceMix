@@ -121,6 +121,21 @@ extension AudioObjectID {
 
     var name: String { readString(kAudioObjectPropertyName) ?? "?" }
 
+    var transportType: UInt32 {
+        (try? read(kAudioDevicePropertyTransportType, default: UInt32(0))) ?? 0
+    }
+
+    /// True for software devices (Teams Audio, Zoom, BlackHole, Loopback…) and
+    /// aggregate / multi-output devices. Audio sent to these is usually relayed
+    /// by another app, so SourceMix must not reroute or tap it.
+    var isVirtualOrAggregate: Bool {
+        let t = transportType
+        return t == kAudioDeviceTransportTypeVirtual
+            || t == kAudioDeviceTransportTypeAggregate
+            || t == kAudioDeviceTransportTypeAutoAggregate
+            || (deviceUID ?? "").localizedCaseInsensitiveContains("loopback")
+    }
+
     // MARK: Process objects
 
     var processPID: pid_t { (try? read(kAudioProcessPropertyPID, default: pid_t(-1))) ?? -1 }

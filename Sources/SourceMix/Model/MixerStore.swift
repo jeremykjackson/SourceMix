@@ -95,6 +95,9 @@ final class MixerStore {
     var systemVolume: Double = 0.5
     var systemMuted = false
     private(set) var systemHasVolume = true
+    /// Non-nil while processing is paused because the current output is a
+    /// virtual/aggregate device that another app relays (e.g. Teams Audio).
+    private(set) var bypassReason: String?
 
     /// Sources that have gone quiet stay listed this long (unless customised).
     private let idleGrace: TimeInterval = 20
@@ -153,9 +156,32 @@ final class MixerStore {
     // MARK: Output device
 
     private func attachToDefaultOutput() {
+        // Always follow the output chosen in macOS (Sound settings / Control
+        // Center / the app that selected it). SourceMix never changes it.
         outputDevice = (try? AudioObjectID.defaultOutputDevice()) ?? .unknownObject
         systemOutput.attach(to: outputDevice)
         readSystemOutput()
+        updateBypass()
+    }
+
+    private func updateBypass() {
+        let reason: String?
+        if !outputDevice.isValid {
+            reason = "No output device is selected."
+        } else if outputDevice.isVirtualOrAggregate {
+            reason = "Your Mac's output is set to “\(outputDevice.name)”, a virtual device another app relays. SourceMix is paused until a regular output (speakers, headphones…) is selected in Sound settings."
+        } else {
+            reason = nil
+        }
+        if reason != bypassReason {
+            bypassReason = reason
+            if let reason {
+                log.notice("Bypassing: \(reason, privacy: .public)")
+                for source in sources { source.stopTap() }
+            } else {
+                log.notice("Bypass cleared; output \(self.outputDevice.name, privacy: .public)")
+            }
+        }
     }
 
     private func defaultOutputChanged() {
@@ -163,7 +189,8 @@ final class MixerStore {
         guard newDevice != outputDevice else { return }
         log.notice("Default output changed to \(newDevice.name, privacy: .public) (\(newDevice))")
         attachToDefaultOutput()
-        for source in sources where source.isTapped || source.tap != nil {
+        guard canTap else { return }
+        for source in sources {
             source.startTap(outputDevice: outputDevice, reason: "output device changed")
         }
     }
@@ -204,6 +231,7 @@ final class MixerStore {
             let pid = object.processPID
             guard pid > 0, pid != ownPID else { continue }
             let bundleID = object.processBundleID
+            if let bundleID, Self.ignoredBundleIDs.contains(bundleID) { continue }
             let owner = ProcessOwnership.owningApplication(for: pid)
             if owner?.processIdentifier == ownPID { continue }
 
@@ -291,7 +319,16 @@ final class MixerStore {
         }
     }
 
-    private var canTap: Bool { permission == .authorized }
+    private var canTap: Bool { permission == .authorized && bypassReason == nil }
+
+    /// Background services that report output constantly or must never be
+    /// tapped (speech recognition, audio relays).
+    private static let ignoredBundleIDs: Set<String> = [
+        "com.apple.CoreSpeech",
+        "com.apple.accessibility.heard",
+        "com.apple.audio.Core-Audio-Driver-Service.helper",
+        "com.apple.audiomxd"
+    ]
 
     // MARK: Settings
 
@@ -321,7 +358,8 @@ final class MixerStore {
         lines.append("SourceMix \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") on macOS \(info.operatingSystemVersionString)")
         lines.append("Date: \(Date())")
         lines.append("Permission: \(permission)")
-        lines.append("Output: \(outputDevice.name) id \(outputDevice) uid \(outputDevice.deviceUID ?? "?") @ \(outputDevice.nominalSampleRate) Hz, streams out \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeOutput)) in \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeInput))")
+        lines.append("Bypass: \(bypassReason ?? "no")")
+        lines.append("Output: \(outputDevice.name) id \(outputDevice) uid \(outputDevice.deviceUID ?? "?") transport \(outputDevice.transportType.fourCCString) @ \(outputDevice.nominalSampleRate) Hz, streams out \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeOutput)) in \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeInput))")
         lines.append("System volume \(systemVolume) muted \(systemMuted)")
         lines.append("Sources (\(sources.count)):")
         for s in sources {

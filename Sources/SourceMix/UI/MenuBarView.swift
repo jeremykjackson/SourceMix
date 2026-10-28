@@ -27,6 +27,10 @@ struct MenuBarView: View {
                 PermissionBanner()
             }
 
+            if let reason = store.bypassReason {
+                BypassBanner(reason: reason)
+            }
+
             ScrollView(.horizontal) {
                 GlassGroup(spacing: 8) {
                     HStack(alignment: .top, spacing: 8) {
