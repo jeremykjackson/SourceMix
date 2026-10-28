@@ -82,6 +82,8 @@ struct ChannelStrip: View {
                 .frame(height: sliderHeight)
                 .padding(.vertical, 4)
 
+            Spacer(minLength: 0)
+
             HStack(spacing: 6) {
                 GlassIconButton(systemImage: source.settings.muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                                 tint: .red, isOn: source.settings.muted,
@@ -106,6 +108,7 @@ struct ChannelStrip: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 14)
         .frame(width: 116)
+        .frame(maxHeight: .infinity)
         .glassSurface(cornerRadius: 24)
         .help(source.errorText ?? "")
         .contextMenu {
@@ -157,6 +160,8 @@ struct OutputStrip: View {
                 .padding(.vertical, 4)
                 .disabled(!store.systemHasVolume)
 
+            Spacer(minLength: 0)
+
             GlassIconButton(systemImage: store.systemMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                             tint: .red, isOn: store.systemMuted,
                             help: store.systemMuted ? "Unmute output" : "Mute output") {
@@ -173,6 +178,7 @@ struct OutputStrip: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 14)
         .frame(width: 116)
+        .frame(maxHeight: .infinity)
         .glassSurface(cornerRadius: 24, tint: .accentColor.opacity(0.15))
     }
 }

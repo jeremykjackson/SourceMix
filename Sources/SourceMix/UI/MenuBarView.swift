@@ -46,11 +46,13 @@ struct MenuBarView: View {
                                     .font(.callout)
                                     .foregroundStyle(.secondary)
                             }
-                            .frame(width: 170, height: sliderHeight + 86)
+                            .frame(width: 170)
+                            .frame(maxHeight: .infinity)
                             .glassSurface(cornerRadius: 20)
                         }
                     }
                     .padding(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .scrollIndicators(.never)
@@ -100,6 +102,7 @@ private struct MiniStrip: View {
                          width: 26,
                          accessibilityName: "\(source.name) volume")
                 .frame(height: sliderHeight)
+            Spacer(minLength: 0)
             HStack(spacing: 4) {
                 GlassIconButton(systemImage: source.settings.muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                                 tint: .red, isOn: source.settings.muted, size: 26,
@@ -115,6 +118,7 @@ private struct MiniStrip: View {
         }
         .padding(.vertical, 10)
         .frame(width: width)
+        .frame(maxHeight: .infinity)
         .glassSurface(cornerRadius: 20)
         .contextMenu {
             Picker("Channel", selection: $source.settings.channel) {
@@ -149,6 +153,7 @@ private struct MiniOutputStrip: View {
                          accessibilityName: "Output volume")
                 .frame(height: sliderHeight)
                 .disabled(!store.systemHasVolume)
+            Spacer(minLength: 0)
             GlassIconButton(systemImage: store.systemMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                             tint: .red, isOn: store.systemMuted, size: 26,
                             help: store.systemMuted ? "Unmute output" : "Mute output") {
@@ -157,6 +162,7 @@ private struct MiniOutputStrip: View {
         }
         .padding(.vertical, 10)
         .frame(width: width)
+        .frame(maxHeight: .infinity)
         .glassSurface(cornerRadius: 20, tint: .accentColor.opacity(0.15))
     }
 }

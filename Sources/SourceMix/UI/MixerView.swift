@@ -32,6 +32,7 @@ struct MixerView: View {
                     }
                     .padding(.horizontal, 2)
                     .padding(.vertical, 4)
+                    .fixedSize(horizontal: false, vertical: true)
                     .animation(.spring(response: 0.35, dampingFraction: 0.8), value: store.sources.map(\.id))
                 }
             }
@@ -97,7 +98,8 @@ struct EmptySourcesCard: View {
                 .multilineTextAlignment(.center)
         }
         .padding(24)
-        .frame(width: 220, height: 380)
+        .frame(width: 220)
+        .frame(maxHeight: .infinity)
         .glassSurface(cornerRadius: 24)
     }
 }
