@@ -47,10 +47,10 @@ final class AudioSource: Identifiable {
         lastTapStart = Date()
         lastCallbackCount = -1
         guard !processObjects.isEmpty, outputDevice.isValid else { return }
-        let settings = AppSettings.shared
+        let appSettings = AppSettings.shared
         let processor = StreamProcessor(sampleRate: outputDevice.nominalSampleRate)
         let drift: Bool
-        switch settings.drift {
+        switch appSettings.drift {
         case .on: drift = true
         case .off: drift = false
         case .automatic:
@@ -61,7 +61,7 @@ final class AudioSource: Identifiable {
         }
         let tap = ProcessTap(processObjects: processObjects, outputDevice: outputDevice, processor: processor,
                              driftCompensation: drift,
-                             keepAllChannels: settings.surround == .passThrough)
+                             keepAllChannels: appSettings.surround == .passThrough)
         // Configure before audio starts flowing so there is no full-volume blip.
         self.tap = tap
         apply(settings, previous: nil)
