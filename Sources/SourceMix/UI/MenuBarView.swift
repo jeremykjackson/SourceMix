@@ -71,7 +71,7 @@ struct MenuBarView: View {
         .padding(14)
         .frame(width: panelWidth)
         .fixedSize(horizontal: false, vertical: true)
-        .background(WindowAccessor { panelWindow = $0 })
+        .background(WindowAccessor { window in if panelWindow !== window { panelWindow = window } })
         .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
             fit(window: panelWindow, to: size)
         }
