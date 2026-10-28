@@ -25,7 +25,7 @@ final class AudioSource: Identifiable {
     }
 
     @ObservationIgnored var processObjects: [AudioObjectID] = []
-    @ObservationIgnored private(set) var tap: ProcessTap?
+    private(set) var tap: ProcessTap?
     @ObservationIgnored var onSettingsChanged: ((AudioSource) -> Void)?
     @ObservationIgnored var lastTapStart = Date.distantPast
     @ObservationIgnored var lastCallbackCount = -1

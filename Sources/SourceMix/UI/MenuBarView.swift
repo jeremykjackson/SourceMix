@@ -56,6 +56,7 @@ struct MenuBarView: View {
             }
             .scrollIndicators(.never)
             .frame(width: panelWidth - 28)
+            .fixedSize(horizontal: false, vertical: true)
 
             Button {
                 openWindow(id: "mixer")
@@ -69,6 +70,32 @@ struct MenuBarView: View {
         }
         .padding(14)
         .frame(width: panelWidth)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(WindowAccessor { panelWindow = $0 })
+        .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
+            fit(window: panelWindow, to: size)
+        }
+        .onChange(of: panelWindow) { _, window in
+            DispatchQueue.main.async { fit(window: window, to: nil) }
+        }
+    }
+
+    @State private var panelWindow: NSWindow?
+
+    /// MenuBarExtra panels grow with their content but don't always shrink
+    /// (e.g. after a banner disappears). Keep the panel hugging the content,
+    /// anchored to the menu bar.
+    private func fit(window: NSWindow?, to size: CGSize?) {
+        guard let window, let view = window.contentView else { return }
+        let target = size ?? view.fittingSize
+        guard target.width > 0, target.height > 0 else { return }
+        let frame = window.frame
+        let current = window.contentRect(forFrameRect: frame).size
+        guard abs(current.height - target.height) > 0.5 || abs(current.width - target.width) > 0.5 else { return }
+        var newFrame = window.frameRect(forContentRect: NSRect(origin: .zero, size: target))
+        newFrame.origin.x = frame.midX - newFrame.width / 2
+        newFrame.origin.y = frame.maxY - newFrame.height   // keep the top edge under the menu bar
+        window.setFrame(newFrame, display: true, animate: false)
     }
 
     /// Grows with the number of sources, up to five strips before scrolling.
@@ -160,5 +187,20 @@ private struct MiniOutputStrip: View {
         .padding(.vertical, 10)
         .frame(width: width)
         .glassSurface(cornerRadius: 20, tint: .accentColor.opacity(0.15))
+    }
+}
+
+/// Hands back the NSWindow hosting a SwiftUI view.
+struct WindowAccessor: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { onWindow(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { onWindow(nsView.window) }
     }
 }
