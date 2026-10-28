@@ -121,8 +121,14 @@ final class MixerStore {
         systemOutput.onChange = { [weak self] in self?.readSystemOutput() }
         attachToDefaultOutput()
 
+        log.notice("Launch: default output \(self.outputDevice.name, privacy: .public) (\(self.outputDevice)); devices \(Self.deviceListDescription(), privacy: .public)")
         listeners.append(PropertyListener(object: .system, selector: kAudioHardwarePropertyDefaultOutputDevice) { [weak self] in
+            let now = (try? AudioObjectID.defaultOutputDevice()) ?? .unknownObject
+            log.notice("macOS reports default output changed → \(now.name, privacy: .public) (\(now)); our taps running: \(self?.sources.filter(\.isTapped).count ?? 0)")
             self?.defaultOutputChanged()
+        })
+        listeners.append(PropertyListener(object: .system, selector: kAudioHardwarePropertyDevices) {
+            log.notice("Audio device list changed: \(Self.deviceListDescription(), privacy: .public)")
         })
         listeners.append(PropertyListener(object: .system, selector: kAudioHardwarePropertyProcessObjectList) { [weak self] in
             self?.refresh()
@@ -352,6 +358,12 @@ final class MixerStore {
 
     // MARK: Diagnostics
 
+    /// Public (non-private) audio devices, e.g. "MacBook Pro Speakers(84,bltn) …".
+    static func deviceListDescription() -> String {
+        let devices = (try? AudioObjectID.system.readArray(kAudioHardwarePropertyDevices, element: AudioObjectID.unknownObject)) ?? []
+        return devices.map { "\($0.name)(\($0),\($0.transportType.fourCCString))" }.joined(separator: ", ")
+    }
+
     func diagnosticsSnapshot() -> String {
         var lines: [String] = []
         let info = ProcessInfo.processInfo
@@ -360,6 +372,7 @@ final class MixerStore {
         lines.append("Permission: \(permission)")
         lines.append("Bypass: \(bypassReason ?? "no")")
         lines.append("Output: \(outputDevice.name) id \(outputDevice) uid \(outputDevice.deviceUID ?? "?") transport \(outputDevice.transportType.fourCCString) @ \(outputDevice.nominalSampleRate) Hz, streams out \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeOutput)) in \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeInput))")
+        lines.append("Devices: \(Self.deviceListDescription())")
         lines.append("System volume \(systemVolume) muted \(systemMuted)")
         lines.append("Sources (\(sources.count)):")
         for s in sources {
