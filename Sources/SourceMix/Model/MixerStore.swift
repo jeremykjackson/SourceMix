@@ -27,6 +27,9 @@ final class AudioSource: Identifiable {
     @ObservationIgnored var processObjects: [AudioObjectID] = []
     @ObservationIgnored private(set) var tap: ProcessTap?
     @ObservationIgnored var onSettingsChanged: ((AudioSource) -> Void)?
+    @ObservationIgnored var lastTapStart = Date.distantPast
+    @ObservationIgnored var lastCallbackCount = -1
+    @ObservationIgnored var restartCount = 0
 
     var processor: StreamProcessor? { tap?.processor }
     var isTapped: Bool { tap?.isRunning == true }
@@ -38,8 +41,11 @@ final class AudioSource: Identifiable {
         self.settings = settings
     }
 
-    func startTap(outputDevice: AudioDeviceID) {
+    func startTap(outputDevice: AudioDeviceID, reason: String) {
+        log.notice("(Re)starting tap for \(self.name, privacy: .public) – \(reason, privacy: .public)")
         stopTap()
+        lastTapStart = Date()
+        lastCallbackCount = -1
         guard !processObjects.isEmpty, outputDevice.isValid else { return }
         let processor = StreamProcessor(sampleRate: outputDevice.nominalSampleRate)
         let tap = ProcessTap(processObjects: processObjects, outputDevice: outputDevice, processor: processor)
@@ -155,9 +161,10 @@ final class MixerStore {
     private func defaultOutputChanged() {
         let newDevice = (try? AudioObjectID.defaultOutputDevice()) ?? .unknownObject
         guard newDevice != outputDevice else { return }
+        log.notice("Default output changed to \(newDevice.name, privacy: .public) (\(newDevice))")
         attachToDefaultOutput()
         for source in sources where source.isTapped || source.tap != nil {
-            source.startTap(outputDevice: outputDevice)
+            source.startTap(outputDevice: outputDevice, reason: "output device changed")
         }
     }
 
@@ -222,9 +229,14 @@ final class MixerStore {
                     source.isPlaying = group.playing
                     changed = true
                 }
-                if Set(source.processObjects) != Set(group.objects) {
-                    source.processObjects = group.objects
-                    if canTap { source.startTap(outputDevice: outputDevice) }
+                // Rebuild the tap only when the app gained a new audio
+                // process (e.g. a new browser tab helper), and at most every
+                // few seconds – churn here is expensive and glitchy.
+                let tapped = Set(source.tap?.processObjects ?? source.processObjects)
+                source.processObjects = group.objects
+                let added = Set(group.objects).subtracting(tapped)
+                if !added.isEmpty, canTap, now.timeIntervalSince(source.lastTapStart) > 3 {
+                    source.startTap(outputDevice: outputDevice, reason: "new audio process(es) \(added.sorted())")
                 }
             } else if group.playing {
                 let source = AudioSource(id: key, name: group.name,
@@ -233,7 +245,8 @@ final class MixerStore {
                 source.processObjects = group.objects
                 source.isPlaying = true
                 source.onSettingsChanged = { [weak self] s in self?.settingsChanged(s) }
-                if canTap { source.startTap(outputDevice: outputDevice) }
+                log.notice("New source \(group.name, privacy: .public) [\(key, privacy: .public)] objects \(group.objects, privacy: .public)")
+                if canTap { source.startTap(outputDevice: outputDevice, reason: "started playing") }
                 byID[key] = source
                 changed = true
             }
@@ -245,11 +258,28 @@ final class MixerStore {
             let alive = groups[key] != nil
             let idleTooLong = !source.isPlaying && now.timeIntervalSince(source.lastActive) > idleGrace
             if !alive || (idleTooLong && source.settings.isDefault) {
+                log.notice("Retiring source \(source.name, privacy: .public): \(alive ? "idle" : "process gone", privacy: .public)")
                 source.stopTap()
                 byID[key] = nil
                 changed = true
-            } else if canTap && source.tap == nil && source.errorText == nil {
-                source.startTap(outputDevice: outputDevice)
+            } else if canTap && source.tap == nil {
+                // No tap yet, or the last attempt failed: retry, gently.
+                if source.errorText == nil || now.timeIntervalSince(source.lastTapStart) > 10 {
+                    source.startTap(outputDevice: outputDevice, reason: source.errorText == nil ? "no tap" : "retry after error")
+                }
+            } else if let processor = source.processor, canTap {
+                // Watchdog: if the IO callback stopped running, the app stays
+                // muted by its tap – restart it rather than leave silence.
+                let count = processor.callbackCount
+                if count == source.lastCallbackCount,
+                   now.timeIntervalSince(source.lastTapStart) > 2,
+                   now.timeIntervalSince(source.lastTapStart) > Double(min(30, 3 << min(source.restartCount, 3))) {
+                    source.restartCount += 1
+                    log.error("IO stalled for \(source.name, privacy: .public) (callbacks stuck at \(count)); restart #\(source.restartCount)")
+                    source.startTap(outputDevice: outputDevice, reason: "IO watchdog")
+                } else {
+                    source.lastCallbackCount = count
+                }
             }
         }
 
@@ -277,6 +307,39 @@ final class MixerStore {
 
     private func persistNow() {
         SettingsStore.save(saved)
+        for source in sources where !source.settings.isDefault {
+            let st = source.settings
+            log.notice("Settings \(source.name, privacy: .public): pos \(st.position) gain \(st.gain) muted \(st.muted) ch \(st.channel.label, privacy: .public) eq \(st.isEQActive)")
+        }
+    }
+
+    // MARK: Diagnostics
+
+    func diagnosticsSnapshot() -> String {
+        var lines: [String] = []
+        let info = ProcessInfo.processInfo
+        lines.append("SourceMix \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") on macOS \(info.operatingSystemVersionString)")
+        lines.append("Date: \(Date())")
+        lines.append("Permission: \(permission)")
+        lines.append("Output: \(outputDevice.name) id \(outputDevice) uid \(outputDevice.deviceUID ?? "?") @ \(outputDevice.nominalSampleRate) Hz, streams out \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeOutput)) in \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeInput))")
+        lines.append("System volume \(systemVolume) muted \(systemMuted)")
+        lines.append("Sources (\(sources.count)):")
+        for s in sources {
+            lines.append("• \(s.name) [\(s.id)] playing \(s.isPlaying) objects \(s.processObjects) error \(s.errorText ?? "none")")
+            lines.append("    settings: pos \(s.settings.position) gain \(s.settings.gain) muted \(s.settings.muted) channel \(s.settings.channel.label) eqActive \(s.settings.isEQActive) eq \(s.settings.eqGains)")
+            if let tap = s.tap {
+                let p = tap.processor
+                lines.append("    tap: running \(tap.isRunning) since \(tap.startedAt) aggregate \(tap.aggregateDeviceID) tapped \(tap.processObjects) callbacks \(p.callbackCount) empty \(p.emptyCallbackCount) filterResets \(p.filterResetCount) peak \(p.currentPeak) restarts \(s.restartCount)")
+                lines.append("    layout: \(p.layoutDescription); aggregate streams in \(tap.aggregateDeviceID.streamChannelSummary(scope: kAudioObjectPropertyScopeInput)) out \(tap.aggregateDeviceID.streamChannelSummary(scope: kAudioObjectPropertyScopeOutput))")
+            } else {
+                lines.append("    tap: none")
+            }
+        }
+        lines.append("All HAL processes:")
+        for object in (try? AudioObjectID.processObjects()) ?? [] {
+            lines.append("  \(object): pid \(object.processPID) \(object.processBundleID ?? "-") output \(object.processIsRunningOutput)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     func source(id: String) -> AudioSource? { sources.first { $0.id == id } }

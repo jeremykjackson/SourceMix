@@ -107,6 +107,20 @@ extension AudioObjectID {
         (try? read(kAudioDevicePropertyNominalSampleRate, default: Float64(48_000))) ?? 48_000
     }
 
+    /// e.g. "[2, 2]" – channel count of each stream in the given scope.
+    func streamChannelSummary(scope: AudioObjectPropertyScope) -> String {
+        var address = AudioObjectPropertyAddress(kAudioDevicePropertyStreamConfiguration, scope: scope)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(self, &address, 0, nil, &size) == noErr, size > 0 else { return "[]" }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(self, &address, 0, nil, &size, raw) == noErr else { return "[?]" }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return "[" + list.map { String($0.mNumberChannels) }.joined(separator: ", ") + "]"
+    }
+
+    var name: String { readString(kAudioObjectPropertyName) ?? "?" }
+
     // MARK: Process objects
 
     var processPID: pid_t { (try? read(kAudioProcessPropertyPID, default: pid_t(-1))) ?? -1 }

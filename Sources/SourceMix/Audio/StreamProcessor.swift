@@ -81,6 +81,12 @@ final class StreamProcessor: @unchecked Sendable {
     private let historyWrite = Atomic<Int>(0)
     private let latestPeakBits = Atomic<UInt32>(0)
 
+    // Health / diagnostics (audio -> main)
+    private let callbacks = Atomic<Int>(0)
+    private let silentCallbacks = Atomic<Int>(0)
+    private let layoutBits = Atomic<Int>(0)
+    private let nonFiniteResets = Atomic<Int>(0)
+
     // Audio-thread-only state
     private var smoothedGain: Float = 1
     private var meterAccumulator: Float = 0
@@ -156,6 +162,27 @@ final class StreamProcessor: @unchecked Sendable {
 
     var currentPeak: Float { Float(bitPattern: latestPeakBits.load(ordering: .relaxed)) }
 
+    /// Number of IO callbacks so far (used by the stall watchdog).
+    var callbackCount: Int { callbacks.load(ordering: .relaxed) }
+    /// Callbacks that delivered no usable tap input.
+    var emptyCallbackCount: Int { silentCallbacks.load(ordering: .relaxed) }
+    /// Times the EQ state was reset after producing NaN/Inf.
+    var filterResetCount: Int { nonFiniteResets.load(ordering: .relaxed) }
+
+    /// Buffer layout seen by the IO callback, packed as
+    /// inBuffers | inChannelsOfLast<<8 | outBuffers<<16 | outChannelsOfFirst<<24.
+    var layoutDescription: String {
+        let v = layoutBits.load(ordering: .relaxed)
+        return "in: \(v & 0xFF) buffers (last has \((v >> 8) & 0xFF) ch), out: \((v >> 16) & 0xFF) buffers (first has \((v >> 24) & 0xFF) ch)"
+    }
+
+    func noteCallback(inBuffers: Int, inChannels: Int, outBuffers: Int, outChannels: Int, hadInput: Bool) {
+        callbacks.wrappingAdd(1, ordering: .relaxed)
+        if !hadInput { silentCallbacks.wrappingAdd(1, ordering: .relaxed) }
+        let packed = (inBuffers & 0xFF) | (inChannels & 0xFF) << 8 | (outBuffers & 0xFF) << 16 | (outChannels & 0xFF) << 24
+        layoutBits.store(packed, ordering: .relaxed)
+    }
+
     // MARK: Audio thread
 
     /// Processes one IO cycle.
@@ -180,6 +207,8 @@ final class StreamProcessor: @unchecked Sendable {
         for frame in 0..<frames {
             var l = left[frame * inStride]
             var r = right[frame * inStride]
+            if !l.isFinite { l = 0 }
+            if !r.isFinite { r = 0 }
 
             let p = max(abs(l), abs(r))
             if p > meterAccumulator { meterAccumulator = p }
@@ -201,6 +230,8 @@ final class StreamProcessor: @unchecked Sendable {
             case .mono: let m = (l + r) * 0.5; l = m; r = m
             }
 
+            if !l.isFinite { l = 0 }
+            if !r.isFinite { r = 0 }
             if let outLeft { outLeft[frame * outStride] += Self.softClip(l) }
             if let outRight { outRight[frame * outStride] += Self.softClip(r) }
 
@@ -211,8 +242,20 @@ final class StreamProcessor: @unchecked Sendable {
                 meterFrames = 0
             }
         }
-        smoothedGain = g
-        latestPeakBits.store(blockPeak.bitPattern, ordering: .relaxed)
+        smoothedGain = g.isFinite ? g : target
+        latestPeakBits.store(blockPeak.isFinite ? blockPeak.bitPattern : 0, ordering: .relaxed)
+
+        // A filter that blew up (NaN/Inf) would silence the stream forever;
+        // detect it and reset the state.
+        if useEQ {
+            let count = 2 * EQBands.count * 2
+            var bad = false
+            for i in 0..<count where !state[i].isFinite { bad = true; break }
+            if bad {
+                state.update(repeating: 0, count: count)
+                nonFiniteResets.wrappingAdd(1, ordering: .relaxed)
+            }
+        }
     }
 
     /// Records silence in the meter when the source isn't delivering audio.

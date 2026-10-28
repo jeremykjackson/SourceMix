@@ -18,6 +18,8 @@ final class ProcessTap {
     private var ioProcID: AudioDeviceIOProcID?
     private let queue = DispatchQueue(label: "com.jeremyjackson.SourceMix.io", qos: .userInteractive)
     private(set) var isRunning = false
+    private(set) var startedAt = Date()
+    var aggregateDeviceID: AudioObjectID { aggregateID }
 
     init(processObjects: [AudioObjectID], outputDevice: AudioDeviceID, processor: StreamProcessor) {
         self.processObjects = processObjects
@@ -90,10 +92,14 @@ final class ProcessTap {
             throw error
         }
         isRunning = true
-        log.debug("Started tap for \(label, privacy: .public)")
+        startedAt = Date()
+        log.notice("Started tap for \(label, privacy: .public): processes \(self.processObjects, privacy: .public), tap \(self.tapID), aggregate \(self.aggregateID), output \(outputUID, privacy: .public) @ \(self.outputDevice.nominalSampleRate) Hz, aggregate streams in \(self.aggregateID.streamChannelSummary(scope: kAudioObjectPropertyScopeInput), privacy: .public) out \(self.aggregateID.streamChannelSummary(scope: kAudioObjectPropertyScopeOutput), privacy: .public)")
     }
 
     func stop() {
+        if isRunning || tapID.isValid {
+            log.notice("Stopping tap (aggregate \(self.aggregateID), tap \(self.tapID), callbacks \(self.processor.callbackCount), empty \(self.processor.emptyCallbackCount))")
+        }
         if aggregateID.isValid, let ioProcID {
             AudioDeviceStop(aggregateID, ioProcID)
             AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
@@ -121,7 +127,11 @@ final class ProcessTap {
         }
 
         let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+        let lastChannelsSeen = inList.count > 0 ? Int(inList[inList.count - 1].mNumberChannels) : 0
+        let outChannelsSeen = outList.count > 0 ? Int(outList[0].mNumberChannels) : 0
         guard inList.count > 0, outList.count > 0 else {
+            processor.noteCallback(inBuffers: inList.count, inChannels: lastChannelsSeen,
+                                   outBuffers: outList.count, outChannels: outChannelsSeen, hadInput: false)
             processor.decayMeter()
             return
         }
@@ -130,9 +140,13 @@ final class ProcessTap {
         // device, so the tapped audio lives in the last buffer(s).
         let last = inList[inList.count - 1]
         guard let lastData = last.mData?.assumingMemoryBound(to: Float.self), last.mDataByteSize > 0 else {
+            processor.noteCallback(inBuffers: inList.count, inChannels: lastChannelsSeen,
+                                   outBuffers: outList.count, outChannels: outChannelsSeen, hadInput: false)
             processor.decayMeter()
             return
         }
+        processor.noteCallback(inBuffers: inList.count, inChannels: lastChannelsSeen,
+                               outBuffers: outList.count, outChannels: outChannelsSeen, hadInput: true)
 
         let inLeft: UnsafePointer<Float>
         let inRight: UnsafePointer<Float>

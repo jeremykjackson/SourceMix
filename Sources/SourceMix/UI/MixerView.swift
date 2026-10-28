@@ -133,6 +133,8 @@ struct SettingsMenu: View {
                 NSApp.activate()
                 NSApp.orderFrontStandardAboutPanel(nil)
             }
+            Button("Export Diagnostics…") { Diagnostics.export() }
+            Divider()
             Button("Quit SourceMix") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
         } label: {
