@@ -47,8 +47,21 @@ final class AudioSource: Identifiable {
         lastTapStart = Date()
         lastCallbackCount = -1
         guard !processObjects.isEmpty, outputDevice.isValid else { return }
+        let settings = AppSettings.shared
         let processor = StreamProcessor(sampleRate: outputDevice.nominalSampleRate)
-        let tap = ProcessTap(processObjects: processObjects, outputDevice: outputDevice, processor: processor)
+        let drift: Bool
+        switch settings.drift {
+        case .on: drift = true
+        case .off: drift = false
+        case .automatic:
+            // Only needed if one of the app's processes plays to a device
+            // other than the output we render on (its own clock could drift).
+            let devices = Set(processObjects.flatMap(\.processOutputDevices)).filter(\.isValid)
+            drift = devices.contains { $0 != outputDevice }
+        }
+        let tap = ProcessTap(processObjects: processObjects, outputDevice: outputDevice, processor: processor,
+                             driftCompensation: drift,
+                             keepAllChannels: settings.surround == .passThrough)
         // Configure before audio starts flowing so there is no full-volume blip.
         self.tap = tap
         apply(settings, previous: nil)
@@ -69,6 +82,7 @@ final class AudioSource: Identifiable {
 
     private func apply(_ s: SourceSettings, previous: SourceSettings?) {
         guard let processor = tap?.processor else { return }
+        if previous == nil { processor.setLimiter(AppSettings.shared.limiter) }
         processor.setGain(Float(s.gain))
         processor.setMuted(s.muted)
         processor.setChannelMode(s.channel)
@@ -119,6 +133,7 @@ final class MixerStore {
         started = true
 
         systemOutput.onChange = { [weak self] in self?.readSystemOutput() }
+        AppSettings.shared.onChange = { [weak self] key in self?.settingsChanged(key) }
         attachToDefaultOutput()
 
         log.notice("Launch: default output \(self.outputDevice.name, privacy: .public) (\(self.outputDevice)); devices \(Self.deviceListDescription(), privacy: .public)")
@@ -325,6 +340,22 @@ final class MixerStore {
         }
     }
 
+    /// Applies a changed app-wide setting to the running streams.
+    private func settingsChanged(_ key: AppSettings.Key) {
+        let settings = AppSettings.shared
+        log.notice("Setting changed: limiter \(settings.limiter.title, privacy: .public), drift \(settings.drift.title, privacy: .public), surround \(settings.surround.title, privacy: .public)")
+        switch key {
+        case .limiter:
+            for source in sources { source.processor?.setLimiter(settings.limiter) }
+        case .drift, .surround:
+            // These are fixed when a tap is created, so rebuild them.
+            guard canTap else { return }
+            for source in sources where source.tap != nil {
+                source.startTap(outputDevice: outputDevice, reason: "\(key.rawValue) setting changed")
+            }
+        }
+    }
+
     private var canTap: Bool { permission == .authorized && bypassReason == nil }
 
     /// Background services that report output constantly or must never be
@@ -371,6 +402,8 @@ final class MixerStore {
         lines.append("Date: \(Date())")
         lines.append("Permission: \(permission)")
         lines.append("Bypass: \(bypassReason ?? "no")")
+        let st = AppSettings.shared
+        lines.append("Settings: limiter \(st.limiter.title), drift \(st.drift.title), surround \(st.surround.title)")
         lines.append("Output: \(outputDevice.name) id \(outputDevice) uid \(outputDevice.deviceUID ?? "?") transport \(outputDevice.transportType.fourCCString) @ \(outputDevice.nominalSampleRate) Hz, streams out \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeOutput)) in \(outputDevice.streamChannelSummary(scope: kAudioObjectPropertyScopeInput))")
         lines.append("Devices: \(Self.deviceListDescription())")
         lines.append("System volume \(systemVolume) muted \(systemMuted)")
@@ -381,6 +414,7 @@ final class MixerStore {
             if let tap = s.tap {
                 let p = tap.processor
                 lines.append("    tap: running \(tap.isRunning) since \(tap.startedAt) aggregate \(tap.aggregateDeviceID) tapped \(tap.processObjects) callbacks \(p.callbackCount) empty \(p.emptyCallbackCount) filterResets \(p.filterResetCount) peak \(p.currentPeak) restarts \(s.restartCount)")
+                lines.append("    tap format: \(tap.tapChannels) ch @ \(tap.tapSampleRate) Hz, \(tap.usedMultichannelTap ? "device stream" : "stereo mixdown"), drift compensation \(tap.driftCompensation)")
                 lines.append("    layout: \(p.layoutDescription); aggregate streams in \(tap.aggregateDeviceID.streamChannelSummary(scope: kAudioObjectPropertyScopeInput)) out \(tap.aggregateDeviceID.streamChannelSummary(scope: kAudioObjectPropertyScopeOutput))")
             } else {
                 lines.append("    tap: none")

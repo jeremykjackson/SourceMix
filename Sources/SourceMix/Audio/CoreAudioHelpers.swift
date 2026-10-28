@@ -121,6 +121,24 @@ extension AudioObjectID {
 
     var name: String { readString(kAudioObjectPropertyName) ?? "?" }
 
+    /// Total channels across all streams in the given scope.
+    func channelCount(scope: AudioObjectPropertyScope) -> Int {
+        var address = AudioObjectPropertyAddress(kAudioDevicePropertyStreamConfiguration, scope: scope)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(self, &address, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(self, &address, 0, nil, &size, raw) == noErr else { return 0 }
+        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    /// Devices a process object is currently playing to.
+    var processOutputDevices: [AudioDeviceID] {
+        (try? readArray(kAudioProcessPropertyDevices, scope: kAudioObjectPropertyScopeOutput,
+                        element: AudioDeviceID.unknownObject)) ?? []
+    }
+
     var transportType: UInt32 {
         (try? read(kAudioDevicePropertyTransportType, default: UInt32(0))) ?? 0
     }

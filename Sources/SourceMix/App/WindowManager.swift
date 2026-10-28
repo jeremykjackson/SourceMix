@@ -62,6 +62,17 @@ final class WindowManager: NSObject, NSWindowDelegate, NSPopoverDelegate {
         present(mixerWindow)
     }
 
+    private var settingsWindow: NSWindow?
+
+    func showSettings() {
+        closePopover()
+        if settingsWindow == nil {
+            settingsWindow = makeWindow(title: "SourceMix Settings", root: SettingsView())
+            settingsWindow?.center()
+        }
+        present(settingsWindow)
+    }
+
     func showEqualizer(for sourceID: String) {
         closePopover()
         if equalizerWindows[sourceID] == nil {
@@ -122,6 +133,7 @@ final class WindowManager: NSObject, NSWindowDelegate, NSPopoverDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
+        if window === settingsWindow { settingsWindow = nil }
         if let id = window.identifier?.rawValue, id.hasPrefix("eq.") {
             equalizerWindows[String(id.dropFirst(3))] = nil
         }

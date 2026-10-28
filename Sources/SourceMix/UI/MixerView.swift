@@ -181,6 +181,8 @@ struct SettingsMenu: View {
                 NSApp.activate()
                 NSApp.orderFrontStandardAboutPanel(nil)
             }
+            Button("Settings…") { WindowManager.shared.showSettings() }
+                .keyboardShortcut(",")
             Button("Export Diagnostics…") { Diagnostics.export() }
             Divider()
             Button("Quit SourceMix") { NSApp.terminate(nil) }

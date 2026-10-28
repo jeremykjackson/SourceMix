@@ -9,7 +9,7 @@ struct SourceMixApp: App {
     var body: some Scene {
         // The menu bar item, popover and windows are AppKit-hosted (see
         // WindowManager) so they always size to their content.
-        Settings { EmptyView() }
+        Settings { SettingsView() }
     }
 }
 

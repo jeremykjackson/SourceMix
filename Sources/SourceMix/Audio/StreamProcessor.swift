@@ -69,6 +69,7 @@ final class StreamProcessor: @unchecked Sendable {
     private let muted = Atomic<Bool>(false)
     private let channelMode = Atomic<Int>(ChannelMode.stereo.rawValue)
     private let eqEnabled = Atomic<Bool>(false)
+    private let limiter = Atomic<Int>(LimiterMode.whenBoosting.rawValue)
     private let activeCoefficientSet = Atomic<Int>(0)
 
     // EQ: 2 coefficient sets × 15 bands × (b0 b1 b2 a1 a2)
@@ -115,6 +116,7 @@ final class StreamProcessor: @unchecked Sendable {
     func setGain(_ gain: Float) { gainBits.store(max(0, gain).bitPattern, ordering: .relaxed) }
     func setMuted(_ value: Bool) { muted.store(value, ordering: .relaxed) }
     func setChannelMode(_ mode: ChannelMode) { channelMode.store(mode.rawValue, ordering: .relaxed) }
+    func setLimiter(_ mode: LimiterMode) { limiter.store(mode.rawValue, ordering: .relaxed) }
 
     func setEQ(gains: [Double], enabled: Bool = true) {
         let flat = gains.allSatisfy { abs($0) < 0.05 }
@@ -185,56 +187,136 @@ final class StreamProcessor: @unchecked Sendable {
 
     // MARK: Audio thread
 
-    /// Processes one IO cycle.
-    /// - Parameters:
-    ///   - left/right: input sample pointers (may be the same for mono input).
-    ///   - inStride: distance between successive frames in the input buffers.
-    ///   - outLeft/outRight: destination pointers (nil to discard).
-    ///   - outStride: distance between successive frames in the output buffers.
-    func process(left: UnsafePointer<Float>, right: UnsafePointer<Float>, inStride: Int,
-                 outLeft: UnsafeMutablePointer<Float>?, outRight: UnsafeMutablePointer<Float>?, outStride: Int,
-                 frames: Int) {
+    /// Channel pointers for one IO cycle, filled by the render callback.
+    /// Preallocated so the audio thread never allocates.
+    final class ChannelIO {
+        static let maxChannels = 32
+        let input = UnsafeMutablePointer<UnsafePointer<Float>?>.allocate(capacity: maxChannels)
+        let inputStride = UnsafeMutablePointer<Int>.allocate(capacity: maxChannels)
+        let output = UnsafeMutablePointer<UnsafeMutablePointer<Float>?>.allocate(capacity: maxChannels)
+        let outputStride = UnsafeMutablePointer<Int>.allocate(capacity: maxChannels)
+        var inputCount = 0
+        var outputCount = 0
+
+        init() {
+            input.initialize(repeating: nil, count: Self.maxChannels)
+            inputStride.initialize(repeating: 1, count: Self.maxChannels)
+            output.initialize(repeating: nil, count: Self.maxChannels)
+            outputStride.initialize(repeating: 1, count: Self.maxChannels)
+        }
+
+        deinit {
+            input.deallocate(); inputStride.deallocate()
+            output.deallocate(); outputStride.deallocate()
+        }
+
+        func addInput(_ p: UnsafePointer<Float>, stride: Int) {
+            guard inputCount < Self.maxChannels else { return }
+            input[inputCount] = p; inputStride[inputCount] = stride; inputCount += 1
+        }
+
+        func addOutput(_ p: UnsafeMutablePointer<Float>, stride: Int) {
+            guard outputCount < Self.maxChannels else { return }
+            output[outputCount] = p; outputStride[outputCount] = stride; outputCount += 1
+        }
+    }
+
+    /// Owned by the IO thread.
+    let io = ChannelIO()
+
+    /// Processes one IO cycle using the channels registered in `io`.
+    ///
+    /// With unity gain, a flat (bypassed) EQ, Stereo routing and the limiter
+    /// not engaged, every sample is copied unchanged (bit-transparent).
+    func process(frames: Int) {
+        let nIn = io.inputCount
+        let nOut = io.outputCount
+        guard nIn > 0, nOut > 0, frames > 0 else { return }
+
         let target: Float = muted.load(ordering: .relaxed) ? 0 : Float(bitPattern: gainBits.load(ordering: .relaxed))
         let mode = ChannelMode(rawValue: channelMode.load(ordering: .relaxed)) ?? .stereo
+        let limiterMode = LimiterMode(rawValue: limiter.load(ordering: .relaxed)) ?? .whenBoosting
         let useEQ = eqEnabled.load(ordering: .acquiring)
         let coeff = coefficients + activeCoefficientSet.load(ordering: .acquiring) * EQBands.count * 5
         let bands = EQBands.count
         let framesPerMeterPoint = max(64, Int(sampleRate / 75)) // ~75 points/sec
 
+        let inL = io.input[0]!, sL = io.inputStride[0]
+        let inR = nIn > 1 ? io.input[1]! : inL
+        let sR = nIn > 1 ? io.inputStride[1] : sL
+        let extraIn = max(0, nIn - 2)
+        // Extra (surround) channels that have somewhere to go in Stereo mode.
+        let extraPassed = max(0, min(nIn, nOut) - 2)
+        let extraScale: Float = extraIn > 0 ? 0.5 / Float(extraIn) : 0
+
         var g = smoothedGain
         var blockPeak: Float = 0
 
         for frame in 0..<frames {
-            var l = left[frame * inStride]
-            var r = right[frame * inStride]
+            var l = inL[frame * sL]
+            var r = inR[frame * sR]
             if !l.isFinite { l = 0 }
             if !r.isFinite { r = 0 }
 
-            let p = max(abs(l), abs(r))
-            if p > meterAccumulator { meterAccumulator = p }
-            if p > blockPeak { blockPeak = p }
+            var p = max(abs(l), abs(r))
 
             if useEQ {
                 l = Self.runEQ(l, channel: 0, coeff: coeff, state: state, bands: bands)
                 r = Self.runEQ(r, channel: 1, coeff: coeff, state: state, bands: bands)
             }
 
-            g += (target - g) * 0.0015
-            l *= g
-            r *= g
+            // Gain smoothing; lands exactly on the target so unity stays exact.
+            if g != target {
+                g += (target - g) * 0.0015
+                if abs(target - g) < 1e-6 { g = target }
+            }
+            if g != 1 {
+                l *= g
+                r *= g
+            }
+
+            // Extra input channels (surround / LFE etc.)
+            var extraSum: Float = 0
+            if extraIn > 0 {
+                for c in 2..<nIn {
+                    var x = io.input[c]![frame * io.inputStride[c]]
+                    if !x.isFinite { x = 0 }
+                    let a = abs(x); if a > p { p = a }
+                    x *= g
+                    if mode == .stereo, c - 2 < extraPassed {
+                        io.output[c]![frame * io.outputStride[c]] += limit(x, mode: limiterMode, gain: g)
+                    } else {
+                        extraSum += x
+                    }
+                }
+            }
 
             switch mode {
-            case .stereo: break
-            case .left: l = (l + r) * 0.5; r = 0
-            case .right: r = (l + r) * 0.5; l = 0
-            case .mono: let m = (l + r) * 0.5; l = m; r = m
+            case .stereo:
+                // Channels the output can't carry are folded into L/R.
+                if extraSum != 0 { l += extraSum * extraScale; r += extraSum * extraScale }
+            case .left:
+                l = (l + r) * 0.5 + extraSum * extraScale; r = 0
+            case .right:
+                r = (l + r) * 0.5 + extraSum * extraScale; l = 0
+            case .mono:
+                let m = (l + r) * 0.5 + extraSum * extraScale; l = m; r = m
             }
 
             if !l.isFinite { l = 0 }
             if !r.isFinite { r = 0 }
-            if let outLeft { outLeft[frame * outStride] += Self.softClip(l) }
-            if let outRight { outRight[frame * outStride] += Self.softClip(r) }
+            l = limit(l, mode: limiterMode, gain: g)
+            r = limit(r, mode: limiterMode, gain: g)
 
+            if nOut >= 2 {
+                io.output[0]![frame * io.outputStride[0]] += l
+                io.output[1]![frame * io.outputStride[1]] += r
+            } else {
+                io.output[0]![frame * io.outputStride[0]] += (l + r) * 0.5
+            }
+
+            if p > meterAccumulator { meterAccumulator = p }
+            if p > blockPeak { blockPeak = p }
             meterFrames += 1
             if meterFrames >= framesPerMeterPoint {
                 pushMeter(meterAccumulator)
@@ -255,6 +337,15 @@ final class StreamProcessor: @unchecked Sendable {
                 state.update(repeating: 0, count: count)
                 nonFiniteResets.wrappingAdd(1, ordering: .relaxed)
             }
+        }
+    }
+
+    @inline(__always)
+    private func limit(_ x: Float, mode: LimiterMode, gain: Float) -> Float {
+        switch mode {
+        case .off: return x
+        case .always: return Self.softClip(x)
+        case .whenBoosting: return gain > 1 ? Self.softClip(x) : x
         }
     }
 
