@@ -81,11 +81,18 @@ final class WindowManager: NSObject, NSWindowDelegate, NSPopoverDelegate {
 
     private func makeWindow<Content: View>(title: String, root: Content) -> NSWindow {
         let host = NSHostingController(rootView: root.background(VisualEffectBackground().ignoresSafeArea()))
-        // The window follows the SwiftUI content's size as it changes.
-        host.sizingOptions = [.intrinsicContentSize]
-        let window = NSWindow(contentViewController: host)
+        // min == max == the SwiftUI content's fixed size, so Auto Layout keeps
+        // the window exactly as big as its content, growing/shrinking with it.
+        host.sizingOptions = [.minSize, .maxSize]
+        // Give the window its real size up front (the hosting view reports
+        // zero until it has been laid out, which left the window invisible).
+        let initial = host.sizeThatFits(in: CGSize(width: 10_000, height: 10_000))
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: initial),
+                              styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.contentViewController = host
+        window.setContentSize(initial)
         window.title = title
-        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
@@ -99,7 +106,16 @@ final class WindowManager: NSObject, NSWindowDelegate, NSPopoverDelegate {
     private func present(_ window: NSWindow?) {
         guard let window else { return }
         DockPolicy.windowOpened()
+        if let host = window.contentViewController {
+            host.view.layoutSubtreeIfNeeded()
+            let size = host.view.fittingSize
+            if size.width > 10, size.height > 10, window.frame.width < 20 || window.frame.height < 20 {
+                window.setContentSize(size)
+                window.center()
+            }
+        }
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     // MARK: NSWindowDelegate
