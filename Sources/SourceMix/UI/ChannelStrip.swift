@@ -46,7 +46,6 @@ extension ChannelMode {
 struct ChannelStrip: View {
     @Bindable var source: AudioSource
     var sliderHeight: CGFloat = 220
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 10) {
@@ -93,7 +92,7 @@ struct ChannelStrip: View {
             }
 
             Button {
-                openWindow(id: "equalizer", value: source.id)
+                WindowManager.shared.showEqualizer(for: source.id)
             } label: {
                 Label("EQ", systemImage: "slider.vertical.3")
                     .font(.caption.weight(.semibold))
@@ -112,7 +111,7 @@ struct ChannelStrip: View {
         .contextMenu {
             Button(source.settings.muted ? "Unmute" : "Mute") { source.toggleMute() }
             Button("Reset Volume") { source.settings.position = SourceSettings.unityPosition }
-            Button("Open Equalizer…") { openWindow(id: "equalizer", value: source.id) }
+            Button("Open Equalizer…") { WindowManager.shared.showEqualizer(for: source.id) }
             Divider()
             Button("Reset All Settings") { source.settings = .default }
         }

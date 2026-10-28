@@ -1,46 +1,44 @@
 import SwiftUI
 
-/// Supplies recent peak levels (oldest first, 0…1) for the waveform overlay.
+/// Supplies the current audio level (linear peak, 0…1+) for the meter bar.
 protocol LevelHistoryProvider {
-    func levels(into buffer: inout [Float])
+    func level() -> Float
 }
 
 struct ProcessorLevels: LevelHistoryProvider {
     let processor: StreamProcessor?
-    func levels(into buffer: inout [Float]) {
-        if let processor {
-            processor.peakHistory(into: &buffer)
-        } else {
-            if buffer.count != StreamProcessor.historyLength {
-                buffer = Array(repeating: 0, count: StreamProcessor.historyLength)
-            } else {
-                for i in buffer.indices { buffer[i] = 0 }
-            }
-        }
-    }
+    func level() -> Float { processor?.currentPeak ?? 0 }
 }
 
-/// Combined (max) level of several processors – used by the Output strip.
+/// Loudest of several processors – used by the Output strip.
 struct CombinedLevels: LevelHistoryProvider {
     let processors: [StreamProcessor]
-    func levels(into buffer: inout [Float]) {
-        let n = StreamProcessor.historyLength
-        if buffer.count != n { buffer = Array(repeating: 0, count: n) }
-        for i in 0..<n { buffer[i] = 0 }
-        var scratch = [Float](repeating: 0, count: n)
-        for p in processors {
-            p.peakHistory(into: &scratch)
-            for i in 0..<n where scratch[i] > buffer[i] { buffer[i] = scratch[i] }
+    func level() -> Float { processors.map(\.currentPeak).max() ?? 0 }
+}
+
+/// Smooths raw peaks into a meter that rises instantly and falls gently.
+private final class MeterBallistics {
+    var display: Double = 0
+    var lastUpdate = Date()
+
+    func update(peak: Float, at now: Date) -> Double {
+        let dt = min(0.25, now.timeIntervalSince(lastUpdate))
+        lastUpdate = now
+        // Map -54…0 dBFS onto 0…1 so quiet audio still moves the bar.
+        let db = 20 * log10(max(Double(peak), 1e-6))
+        let target = min(1, max(0, (db + 54) / 54))
+        if target >= display {
+            display = target
+        } else {
+            display = max(target, display - dt * 1.4)   // ~0.7 s full fall
         }
+        return display
     }
 }
 
-private final class WaveScratch {
-    var buffer = [Float](repeating: 0, count: StreamProcessor.historyLength)
-}
-
-/// Tall capsule volume slider. The light-grey track carries a slightly darker,
-/// live waveform of the source; the accent fill shows the current level.
+/// Vertical volume slider: a thin light-grey track, an accent fill up to the
+/// volume, a slightly darker level bar that rises and falls with the audio,
+/// and a pill-shaped knob.
 struct VolumeSlider: View {
     @Binding var value: Double
     var levels: any LevelHistoryProvider
@@ -48,64 +46,71 @@ struct VolumeSlider: View {
     var tint: Color = .accentColor
     var unityMark: Double? = SourceSettings.unityPosition
     var defaultValue: Double = SourceSettings.unityPosition
+    /// Width of the touch area; the visible track is much thinner.
     var width: CGFloat = 34
     var accessibilityName = "Volume"
 
-    @State private var scratch = WaveScratch()
+    @State private var meter = MeterBallistics()
     @State private var isDragging = false
     @Environment(\.colorScheme) private var colorScheme
+
+    private let trackWidth: CGFloat = 6
+    private let knobSize = CGSize(width: 20, height: 26)
 
     var body: some View {
         GeometryReader { geo in
             let h = geo.size.height
             let w = geo.size.width
-            let knobH: CGFloat = 16
-            let travel = max(1, h - knobH)
-            let knobY = (1 - CGFloat(value)) * travel
+            let travel = max(1, h - knobSize.height)
+            let knobY = (1 - CGFloat(value)) * travel          // top of knob
+            let knobCenter = knobY + knobSize.height / 2
 
             ZStack(alignment: .top) {
-                // Light grey track
+                // Thin light-grey track
                 Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08))
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.10))
+                    .frame(width: trackWidth, height: h)
 
-                // Level fill (bottom → value)
+                // Volume fill (bottom → knob)
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     Capsule(style: .continuous)
                         .fill(isMuted ? AnyShapeStyle(Color.secondary.opacity(0.35))
-                                      : AnyShapeStyle(tint.gradient.opacity(0.85)))
-                        .frame(height: max(w, h - knobY))
+                                      : AnyShapeStyle(tint.gradient))
+                        .frame(width: trackWidth, height: max(trackWidth, h - knobCenter))
                 }
+                .frame(height: h)
 
-                // Slightly darker live waveform over the track
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
-                    Canvas { context, size in
-                        levels.levels(into: &scratch.buffer)
-                        drawWaveform(context: context, size: size, values: scratch.buffer)
+                // Live level bar: slightly darker, rises and falls with the audio
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                    let level = meter.update(peak: levels.level(), at: context.date)
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        Capsule(style: .continuous)
+                            .fill(meterColor)
+                            .frame(width: trackWidth, height: level > 0.01 ? max(trackWidth, CGFloat(level) * h) : 0)
                     }
+                    .frame(height: h)
                 }
-                .clipShape(Capsule(style: .continuous))
                 .allowsHitTesting(false)
 
                 // Unity tick
                 if let unityMark {
-                    let y = (1 - CGFloat(unityMark)) * travel + knobH / 2
+                    let y = (1 - CGFloat(unityMark)) * travel + knobSize.height / 2
                     Capsule()
-                        .fill(Color.primary.opacity(0.35))
-                        .frame(width: w * 0.36, height: 2)
+                        .fill(Color.primary.opacity(0.3))
+                        .frame(width: trackWidth + 8, height: 2)
                         .offset(y: y - 1)
                         .allowsHitTesting(false)
                 }
 
-                // Knob
+                // Pill knob – a slightly elongated circle
                 Capsule(style: .continuous)
                     .fill(.white)
-                    .frame(width: w + 6, height: knobH)
-                    .shadow(color: .black.opacity(isDragging ? 0.3 : 0.18), radius: isDragging ? 5 : 3, y: 1)
-                    .overlay {
-                        Capsule().strokeBorder(.black.opacity(0.06), lineWidth: 0.5)
-                    }
-                    .scaleEffect(isDragging ? 1.08 : 1)
+                    .frame(width: knobSize.width, height: knobSize.height)
+                    .overlay { Capsule().strokeBorder(.black.opacity(0.08), lineWidth: 0.5) }
+                    .shadow(color: .black.opacity(isDragging ? 0.32 : 0.2), radius: isDragging ? 5 : 3, y: 1)
+                    .scaleEffect(isDragging ? 1.1 : 1)
                     .offset(y: knobY)
                     .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isDragging)
             }
@@ -115,7 +120,7 @@ struct VolumeSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
                         isDragging = true
-                        let v = 1 - Double((g.location.y - knobH / 2) / travel)
+                        let v = 1 - Double((g.location.y - knobSize.height / 2) / travel)
                         value = snap(min(1, max(0, v)))
                     }
                     .onEnded { _ in isDragging = false }
@@ -136,39 +141,18 @@ struct VolumeSlider: View {
         .help("Drag to adjust · double-click to reset")
     }
 
+    private var meterColor: Color {
+        colorScheme == .dark ? Color.black.opacity(0.45) : Color.black.opacity(0.22)
+    }
+
     /// Gentle magnetic snap to the unity mark.
     private func snap(_ v: Double) -> Double {
         if let unityMark, abs(v - unityMark) < 0.015 { return unityMark }
         return v
     }
-
-    private func drawWaveform(context: GraphicsContext, size: CGSize, values: [Float]) {
-        let n = values.count
-        guard n > 1 else { return }
-        let midX = size.width / 2
-        let maxHalf = size.width * 0.46
-        let step = size.height / CGFloat(n - 1)
-
-        // Oldest at the top, newest at the bottom: the waveform scrolls upward.
-        var left = Path()
-        var right: [CGPoint] = []
-        right.reserveCapacity(n)
-        for i in 0..<n {
-            let amp = CGFloat(sqrt(max(0, values[i]))) * maxHalf
-            let y = CGFloat(i) * step
-            let pL = CGPoint(x: midX - amp, y: y)
-            if i == 0 { left.move(to: pL) } else { left.addLine(to: pL) }
-            right.append(CGPoint(x: midX + amp, y: y))
-        }
-        for p in right.reversed() { left.addLine(to: p) }
-        left.closeSubpath()
-
-        let shade = colorScheme == .dark ? Color.black.opacity(0.35) : Color.black.opacity(0.14)
-        context.fill(left, with: .color(shade))
-    }
 }
 
-/// Small horizontal level meter used where space is tight.
+/// Small activity dot used where space is tight.
 struct PeakDot: View {
     let processor: StreamProcessor?
     var body: some View {

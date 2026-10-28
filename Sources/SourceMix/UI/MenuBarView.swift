@@ -4,7 +4,6 @@ import SwiftUI
 /// Compact mixer shown from the menu bar icon.
 struct MenuBarView: View {
     @Environment(MixerStore.self) private var store
-    @Environment(\.openWindow) private var openWindow
 
     private let stripWidth: CGFloat = 72
     private let sliderHeight: CGFloat = 150
@@ -59,8 +58,7 @@ struct MenuBarView: View {
             .fixedSize(horizontal: false, vertical: true)
 
             Button {
-                openWindow(id: "mixer")
-                DockPolicy.windowOpened()
+                WindowManager.shared.showMixer()
             } label: {
                 Label("Open SourceMix", systemImage: "macwindow")
                     .frame(maxWidth: .infinity)
@@ -70,32 +68,7 @@ struct MenuBarView: View {
         }
         .padding(14)
         .frame(width: panelWidth)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(WindowAccessor { window in if panelWindow !== window { panelWindow = window } })
-        .onGeometryChange(for: CGSize.self, of: { $0.size }) { size in
-            fit(window: panelWindow, to: size)
-        }
-        .onChange(of: panelWindow) { _, window in
-            DispatchQueue.main.async { fit(window: window, to: nil) }
-        }
-    }
-
-    @State private var panelWindow: NSWindow?
-
-    /// MenuBarExtra panels grow with their content but don't always shrink
-    /// (e.g. after a banner disappears). Keep the panel hugging the content,
-    /// anchored to the menu bar.
-    private func fit(window: NSWindow?, to size: CGSize?) {
-        guard let window, let view = window.contentView else { return }
-        let target = size ?? view.fittingSize
-        guard target.width > 0, target.height > 0 else { return }
-        let frame = window.frame
-        let current = window.contentRect(forFrameRect: frame).size
-        guard abs(current.height - target.height) > 0.5 || abs(current.width - target.width) > 0.5 else { return }
-        var newFrame = window.frameRect(forContentRect: NSRect(origin: .zero, size: target))
-        newFrame.origin.x = frame.midX - newFrame.width / 2
-        newFrame.origin.y = frame.maxY - newFrame.height   // keep the top edge under the menu bar
-        window.setFrame(newFrame, display: true, animate: false)
+        .fixedSize()
     }
 
     /// Grows with the number of sources, up to five strips before scrolling.
@@ -109,7 +82,6 @@ private struct MiniStrip: View {
     @Bindable var source: AudioSource
     let width: CGFloat
     let sliderHeight: CGFloat
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 7) {
@@ -137,8 +109,7 @@ private struct MiniStrip: View {
                 GlassIconButton(systemImage: "slider.vertical.3",
                                 tint: .accentColor, isOn: source.settings.isEQActive, size: 26,
                                 help: "Equalizer for \(source.name)") {
-                    openWindow(id: "equalizer", value: source.id)
-                    DockPolicy.windowOpened()
+                    WindowManager.shared.showEqualizer(for: source.id)
                 }
             }
         }
@@ -190,17 +161,3 @@ private struct MiniOutputStrip: View {
     }
 }
 
-/// Hands back the NSWindow hosting a SwiftUI view.
-struct WindowAccessor: NSViewRepresentable {
-    let onWindow: (NSWindow?) -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { onWindow(view.window) }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { onWindow(nsView.window) }
-    }
-}

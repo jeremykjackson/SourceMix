@@ -36,14 +36,13 @@ struct MixerView: View {
                 }
             }
             .scrollIndicators(.automatic)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 20)
         .padding(.top, 34)
-        .frame(minWidth: 420, minHeight: 470)
-        .containerBackground(.ultraThinMaterial, for: .window)
-        .onAppear { DockPolicy.windowOpened() }
-        .onDisappear { DockPolicy.windowClosed() }
+        .frame(width: windowWidth)
+        .fixedSize()
     }
 
     private var header: some View {
@@ -58,6 +57,19 @@ struct MixerView: View {
             Spacer()
             SettingsMenu()
         }
+    }
+
+    /// Fits every strip (up to seven before scrolling) and any banners.
+    private var windowWidth: CGFloat {
+        let stripWidth: CGFloat = 116, spacing: CGFloat = 14
+        let content: CGFloat
+        if store.sources.isEmpty {
+            content = stripWidth + spacing + 220
+        } else {
+            let n = CGFloat(min(7, store.sources.count + 1))
+            content = n * stripWidth + (n - 1) * spacing
+        }
+        return max(460, content + 40 + 4)
     }
 
     private var subtitle: String {

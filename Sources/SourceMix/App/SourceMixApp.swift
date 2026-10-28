@@ -5,37 +5,11 @@ import SwiftUI
 @main
 struct SourceMixApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var store = MixerStore.shared
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarView()
-                .environment(store)
-        } label: {
-            Image(systemName: "slider.vertical.3")
-                .accessibilityLabel("SourceMix")
-        }
-        .menuBarExtraStyle(.window)
-
-        Window("SourceMix", id: "mixer") {
-            MixerView()
-                .environment(store)
-        }
-        .defaultSize(width: 820, height: 520)
-        .defaultLaunchBehavior(.suppressed)
-        .restorationBehavior(.disabled)
-        .windowStyle(.hiddenTitleBar)
-        .windowBackgroundDragBehavior(.enabled)
-
-        WindowGroup("Equalizer", id: "equalizer", for: String.self) { $sourceID in
-            EqualizerView(sourceID: sourceID ?? "")
-                .environment(store)
-        }
-        .windowResizability(.contentSize)
-        .windowStyle(.hiddenTitleBar)
-        .windowBackgroundDragBehavior(.enabled)
-        .defaultLaunchBehavior(.suppressed)
-        .restorationBehavior(.disabled)
+        // The menu bar item, popover and windows are AppKit-hosted (see
+        // WindowManager) so they always size to their content.
+        Settings { EmptyView() }
     }
 }
 
@@ -44,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Runs quietly in the menu bar; windows only appear on request.
         NSApp.setActivationPolicy(.accessory)
         MainActor.assumeIsolated {
+            WindowManager.shared.installStatusItem()
             MixerStore.shared.start()
         }
     }

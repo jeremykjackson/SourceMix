@@ -5,7 +5,6 @@ import SwiftUI
 struct EqualizerView: View {
     let sourceID: String
     @Environment(MixerStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Group {
@@ -21,16 +20,14 @@ struct EqualizerView: View {
                     Text("Its settings are saved and will apply the next time it plays.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Button("Close") { dismiss() }
+                    Button("Close") { WindowManager.shared.closeEqualizer(for: sourceID) }
                         .glassButtonStyle()
                 }
                 .padding(40)
                 .frame(width: 760, height: 420)
             }
         }
-        .containerBackground(.ultraThinMaterial, for: .window)
-        .onAppear { DockPolicy.windowOpened() }
-        .onDisappear { DockPolicy.windowClosed() }
+        .fixedSize()
     }
 }
 
