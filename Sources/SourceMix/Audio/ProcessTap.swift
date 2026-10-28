@@ -35,11 +35,11 @@ final class ProcessTap {
 
         // 1. Tap the processes. `.mutedWhenTapped` silences their normal output
         //    while we hold the tap, so only our processed copy is heard.
-        let description = CATapDescription(stereoMixdownOfProcesses: processObjects.map { NSNumber(value: $0) })
+        let description = CATapDescription(stereoMixdownOfProcesses: processObjects)
         description.uuid = UUID()
         description.name = "SourceMix – \(label)"
         description.isPrivate = true
-        description.muteBehavior = .mutedWhenTapped
+        description.muteBehavior = CATapMuteBehavior.mutedWhenTapped
 
         var newTap = AudioObjectID.unknownObject
         try AudioHardwareCreateProcessTap(description, &newTap).check("Create process tap")
